@@ -8,71 +8,92 @@
 # Train the AI model
 # Check accuracy
 # Save the trained model (loan_model.pkl)
-
-
-
-
 import pandas as pd
-import pickle
+import joblib
 
 from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import classification_report
 
-# Load Dataset
-data = pd.read_csv("../dataset/train_data.csv")
+DATA_PATH = "dataset/loan_approval_data.csv"
+MODEL_PATH = "creditwise_pipeline.joblib"
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
 
-print("Dataset loaded successfully")
-print("Dataset Shape:", data.shape)
+def main():
+    # 1) Load data
+    df = pd.read_csv(DATA_PATH)
 
-# Remove Loan_ID column
-if "Loan_ID" in data.columns:
-    data = data.drop("Loan_ID", axis=1)
+    df = df.dropna(subset=["Loan_Approved"]).copy()
 
-# Handle Missing Values
-data["Gender"] = data["Gender"].fillna(data["Gender"].mode()[0])
-data["Married"] = data["Married"].fillna(data["Married"].mode()[0])
-data["Dependents"] = data["Dependents"].fillna(data["Dependents"].mode()[0])
-data["Self_Employed"] = data["Self_Employed"].fillna(data["Self_Employed"].mode()[0])
+    # 2) Basic validation
+    df["Loan_Approved"] = df["Loan_Approved"].astype(str).str.strip()
+    df["Loan_Approved"] = df["Loan_Approved"].replace({
+        "YES": "Yes", "yes": "Yes", "Approved": "Yes", "approved": "Yes", "1": "Yes",
+        "NO": "No", "no": "No", "Rejected": "No", "rejected": "No", "0": "No",
+    })
 
-data["LoanAmount"] = data["LoanAmount"].fillna(data["LoanAmount"].median())
-data["Loan_Amount_Term"] = data["Loan_Amount_Term"].fillna(data["Loan_Amount_Term"].median())
-data["Credit_History"] = data["Credit_History"].fillna(data["Credit_History"].mode()[0])
+    # 3) Target + drop ID
+    y = df["Loan_Approved"]
+    X = df.drop(columns=["Loan_Approved", "Applicant_ID"], errors="ignore")
 
-# Fix Dependents column (convert 3+ → 3)
-data["Dependents"] = data["Dependents"].replace("3+", 3)
-data["Dependents"] = data["Dependents"].astype(int)
+    # 4) Define categorical + numerical columns
+    cat_cols = [
+        "Employment_Status", "Marital_Status", "Loan_Purpose",
+        "Property_Area", "Gender", "Employer_Category", "Education_Level"
+    ]
+    num_cols = [c for c in X.columns if c not in cat_cols]
 
-# Encode Categorical Data
-label_encoder = LabelEncoder()
+    # 5) Preprocessing pipelines
+    numeric_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="mean")),
+        ("scaler", StandardScaler()),
+    ])
 
-columns = ["Gender","Married","Education","Self_Employed","Property_Area","Loan_Status"]
+    categorical_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(drop="first", handle_unknown="ignore")),
+    ])
 
-for col in columns:
-    data[col] = label_encoder.fit_transform(data[col])
+    preprocess = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipe, num_cols),
+            ("cat", categorical_pipe, cat_cols),
+        ],
+        remainder="drop",
+    )
 
-# Split Data
-X = data.drop("Loan_Status", axis=1)
-y = data["Loan_Status"]
+    # 6) Model (simple + strong baseline)
+    clf = Pipeline(steps=[
+        ("preprocess", preprocess),
+        ("model", LogisticRegression(max_iter=2000))
+    ])
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+    # 7) Train/test split (stratify helps if classes are imbalanced)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y
+    )
 
-# Train Model
-model = LogisticRegression(max_iter=1000)
-model.fit(X_train, y_train)
+    # 8) Train + evaluate
+    clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
 
-# Predict
-y_pred = model.predict(X_test)
+    print("\n=== Evaluation on Test Set ===")
+    print(classification_report(y_test, preds))
 
-# Accuracy
-accuracy = accuracy_score(y_test, y_pred)
+    # 9) Save the full pipeline (preprocess + model)
+    joblib.dump(clf, MODEL_PATH)
+    print(f"\nSaved model pipeline to: {MODEL_PATH}")
 
-print("Model Accuracy:", accuracy)
+if __name__ == "__main__":
+    main()
 
-# Save Model
-pickle.dump(model, open("loan_model.pkl", "wb"))
 
-print("Model saved as loan_model.pkl")
+
